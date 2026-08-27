@@ -28,6 +28,7 @@ typedef struct {
     GtkListStore *store;
     GtkWidget *total_label;
     GtkWidget *status_label;
+    char *items_path;
     double total;
 } App;
 
@@ -135,6 +136,57 @@ static gboolean load_products(const char *path, GError **error)
     return TRUE;
 }
 
+static Product *find_product(const char *name)
+{
+    for (int i = 0; i < product_count; i++)
+        if (g_strcmp0(products[i].name, name) == 0)
+            return &products[i];
+    return NULL;
+}
+
+static gboolean save_products(App *app, GError **error)
+{
+    JsonBuilder *b = json_builder_new();
+    json_builder_begin_object(b);
+    json_builder_set_member_name(b, "format");
+    json_builder_add_string_value(b, "ACRI");
+    json_builder_set_member_name(b, "version");
+    json_builder_add_int_value(b, 1);
+    json_builder_set_member_name(b, "items");
+    json_builder_begin_array(b);
+
+    for (int i = 0; i < product_count; i++) {
+        Product *p = &products[i];
+        json_builder_begin_object(b);
+        json_builder_set_member_name(b, "name");
+        json_builder_add_string_value(b, p->name);
+        json_builder_set_member_name(b, "price");
+        json_builder_add_double_value(b, p->price);
+        json_builder_set_member_name(b, "stock");
+        json_builder_add_double_value(b, p->stock);
+        json_builder_set_member_name(b, "category");
+        json_builder_add_string_value(b, p->category);
+        json_builder_set_member_name(b, "unit");
+        json_builder_add_string_value(b, p->unit);
+        json_builder_end_object(b);
+    }
+
+    json_builder_end_array(b);
+    json_builder_end_object(b);
+
+    JsonGenerator *g = json_generator_new();
+    JsonNode *root = json_builder_get_root(b);
+    json_generator_set_root(g, root);
+    json_generator_set_pretty(g, TRUE);
+
+    gboolean ok = json_generator_to_file(g, app->items_path, error);
+
+    json_node_free(root);
+    g_object_unref(g);
+    g_object_unref(b);
+    return ok;
+}
+
 static void update_total(App *app)
 {
     char n[64], text[128];
@@ -176,7 +228,7 @@ static void show_error(GtkWindow *parent, const char *text)
     gtk_widget_destroy(d);
 }
 
-static gboolean ask_quantity(App *app, Product *p, double *quantity)
+static gboolean ask_quantity(App *app, Product *p, double initial, double *quantity)
 {
     GtkWidget *d = gtk_dialog_new_with_buttons(
         p->name, GTK_WINDOW(app->window),
@@ -198,6 +250,13 @@ static gboolean ask_quantity(App *app, Product *p, double *quantity)
     GtkWidget *entry = gtk_entry_new();
     gtk_entry_set_placeholder_text(GTK_ENTRY(entry),
         g_strcmp0(p->unit, "ks") == 0 ? "např. 2" : "např. 1,5");
+
+    if (initial > 0.0) {
+        char initial_text[64];
+        format_cz(initial, initial_text, sizeof(initial_text));
+        gtk_entry_set_text(GTK_ENTRY(entry), initial_text);
+        gtk_editable_select_region(GTK_EDITABLE(entry), 0, -1);
+    }
 
     gtk_box_pack_start(GTK_BOX(box), label, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(box), entry, FALSE, FALSE, 0);
@@ -234,7 +293,7 @@ static void add_product(GtkWidget *button, gpointer data)
     Product *p = &products[index];
 
     double q = 0.0;
-    if (!ask_quantity(app, p, &q)) return;
+    if (!ask_quantity(app, p, 0.0, &q)) return;
 
     GtkTreeIter iter;
     if (find_cart_item(app, p->name, &iter)) {
@@ -265,6 +324,55 @@ static void add_product(GtkWidget *button, gpointer data)
     format_cz(q, qtxt, sizeof(qtxt));
     g_snprintf(msg, sizeof(msg), "Přidáno: %s — %s %s", p->name, qtxt, p->unit);
     gtk_label_set_text(GTK_LABEL(app->status_label), msg);
+}
+
+static void cart_row_activated(GtkTreeView *view,
+                               GtkTreePath *path,
+                               GtkTreeViewColumn *column,
+                               gpointer data)
+{
+    (void)view;
+    (void)column;
+    App *app = data;
+
+    GtkTreeIter iter;
+    if (!gtk_tree_model_get_iter(GTK_TREE_MODEL(app->store), &iter, path))
+        return;
+
+    gchar *name = NULL;
+    double old_q = 0.0;
+    double price = 0.0;
+    gtk_tree_model_get(GTK_TREE_MODEL(app->store), &iter,
+                       COL_NAME, &name,
+                       COL_PRICE, &price,
+                       COL_QUANTITY, &old_q,
+                       -1);
+
+    Product *p = find_product(name);
+    if (!p) {
+        g_free(name);
+        return;
+    }
+
+    double new_q = old_q;
+    if (ask_quantity(app, p, old_q, &new_q)) {
+        app->total += (new_q - old_q) * price;
+        if (app->total < 0.001) app->total = 0.0;
+
+        gtk_list_store_set(app->store, &iter,
+                           COL_QUANTITY, new_q,
+                           COL_TOTAL, new_q * price,
+                           -1);
+        update_total(app);
+
+        char qtxt[64], msg[192];
+        format_cz(new_q, qtxt, sizeof(qtxt));
+        g_snprintf(msg, sizeof(msg), "Množství upraveno: %s — %s %s",
+                   p->name, qtxt, p->unit);
+        gtk_label_set_text(GTK_LABEL(app->status_label), msg);
+    }
+
+    g_free(name);
 }
 
 static void remove_selected(GtkWidget *button, gpointer data)
@@ -381,6 +489,63 @@ static void show_receipt(App *app, double charged, double paid, double change)
     gtk_widget_destroy(d);
 }
 
+static gboolean deduct_cart_from_stock(App *app)
+{
+    GtkTreeIter iter;
+    gboolean valid = gtk_tree_model_get_iter_first(GTK_TREE_MODEL(app->store), &iter);
+
+    while (valid) {
+        gchar *name = NULL;
+        double q = 0.0;
+        gtk_tree_model_get(GTK_TREE_MODEL(app->store), &iter,
+                           COL_NAME, &name, COL_QUANTITY, &q, -1);
+        Product *p = find_product(name);
+        g_free(name);
+
+        if (!p || q > p->stock + 0.000001) {
+            show_error(GTK_WINDOW(app->window),
+                       "Sklad se mezitím změnil nebo není dostatečné množství.");
+            return FALSE;
+        }
+        valid = gtk_tree_model_iter_next(GTK_TREE_MODEL(app->store), &iter);
+    }
+
+    valid = gtk_tree_model_get_iter_first(GTK_TREE_MODEL(app->store), &iter);
+    while (valid) {
+        gchar *name = NULL;
+        double q = 0.0;
+        gtk_tree_model_get(GTK_TREE_MODEL(app->store), &iter,
+                           COL_NAME, &name, COL_QUANTITY, &q, -1);
+        Product *p = find_product(name);
+        if (p) p->stock -= q;
+        g_free(name);
+        valid = gtk_tree_model_iter_next(GTK_TREE_MODEL(app->store), &iter);
+    }
+
+    GError *error = NULL;
+    if (save_products(app, &error))
+        return TRUE;
+
+    valid = gtk_tree_model_get_iter_first(GTK_TREE_MODEL(app->store), &iter);
+    while (valid) {
+        gchar *name = NULL;
+        double q = 0.0;
+        gtk_tree_model_get(GTK_TREE_MODEL(app->store), &iter,
+                           COL_NAME, &name, COL_QUANTITY, &q, -1);
+        Product *p = find_product(name);
+        if (p) p->stock += q;
+        g_free(name);
+        valid = gtk_tree_model_iter_next(GTK_TREE_MODEL(app->store), &iter);
+    }
+
+    char msg[512];
+    g_snprintf(msg, sizeof(msg), "Nepodařilo se uložit stav skladu: %s",
+               error ? error->message : "neznámá chyba");
+    show_error(GTK_WINDOW(app->window), msg);
+    g_clear_error(&error);
+    return FALSE;
+}
+
 static void pay(GtkWidget *button, gpointer data)
 {
     (void)button;
@@ -441,6 +606,10 @@ static void pay(GtkWidget *button, gpointer data)
         }
 
         double change = paid - amount_due;
+
+        if (!deduct_cart_from_stock(app))
+            continue;
+
         show_receipt(app, amount_due, paid, change);
         gtk_list_store_clear(app->store);
         app->total = 0.0;
@@ -484,13 +653,13 @@ static void activate(GtkApplication *application, gpointer user_data)
     (void)user_data;
     App *app = g_new0(App, 1);
 
-    char *items = find_items_file();
+    app->items_path = find_items_file();
     GError *error = NULL;
-    if (!load_products(items, &error)) {
-        g_printerr("Nelze načíst %s: %s\n", items, error ? error->message : "chyba");
+    if (!load_products(app->items_path, &error)) {
+        g_printerr("Nelze načíst %s: %s\n", app->items_path,
+                   error ? error->message : "chyba");
         g_clear_error(&error);
     }
-    g_free(items);
 
     app->window = gtk_application_window_new(application);
     gtk_window_set_title(GTK_WINDOW(app->window), "AdavaCashReg");
@@ -538,6 +707,8 @@ static void activate(GtkApplication *application, gpointer user_data)
     app->store = gtk_list_store_new(NUM_COLS,
         G_TYPE_STRING, G_TYPE_DOUBLE, G_TYPE_DOUBLE, G_TYPE_STRING, G_TYPE_DOUBLE);
     app->treeview = gtk_tree_view_new_with_model(GTK_TREE_MODEL(app->store));
+    g_signal_connect(app->treeview, "row-activated",
+                     G_CALLBACK(cart_row_activated), app);
     add_text_column(GTK_TREE_VIEW(app->treeview), "Položka", COL_NAME);
     add_price_column(GTK_TREE_VIEW(app->treeview), "Cena", COL_PRICE);
     add_quantity_column(GTK_TREE_VIEW(app->treeview));

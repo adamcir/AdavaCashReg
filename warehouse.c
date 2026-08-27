@@ -305,16 +305,29 @@ static void show_error(GtkWindow *parent, const char *text)
     gtk_widget_destroy(d);
 }
 
-static void add_item_clicked(GtkButton *button, gpointer data)
+static void item_dialog(WarehouseApp *app, GtkTreeIter *edit_iter)
 {
-    (void)button;
-    WarehouseApp *app = data;
+    gboolean editing = edit_iter != NULL;
+    gchar *old_name = NULL, *old_category = NULL, *old_unit = NULL;
+    double old_price = 0.0, old_stock = 0.0;
+
+    if (editing) {
+        gtk_tree_model_get(GTK_TREE_MODEL(app->store), edit_iter,
+                           COL_NAME, &old_name,
+                           COL_PRICE, &old_price,
+                           COL_STOCK, &old_stock,
+                           COL_CATEGORY, &old_category,
+                           COL_UNIT, &old_unit,
+                           -1);
+    }
 
     GtkWidget *dialog = gtk_dialog_new_with_buttons(
-        "Nová položka", GTK_WINDOW(app->window),
+        editing ? "Upravit položku" : "Nová položka",
+        GTK_WINDOW(app->window),
         GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
         "_Zrušit", GTK_RESPONSE_CANCEL,
-        "_Přidat", GTK_RESPONSE_OK, NULL);
+        editing ? "_Uložit změny" : "_Přidat", GTK_RESPONSE_OK,
+        NULL);
 
     GtkWidget *grid = gtk_grid_new();
     gtk_grid_set_row_spacing(GTK_GRID(grid), 8);
@@ -338,6 +351,19 @@ static void add_item_clicked(GtkButton *button, gpointer data)
         gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(unit), UNITS[i]);
     gtk_combo_box_set_active(GTK_COMBO_BOX(unit), 0);
 
+    if (editing) {
+        char ptxt[64], stxt[64];
+        format_cz(old_price, ptxt, sizeof(ptxt));
+        format_cz(old_stock, stxt, sizeof(stxt));
+        gtk_entry_set_text(GTK_ENTRY(name), old_name ? old_name : "");
+        gtk_entry_set_text(GTK_ENTRY(price), ptxt);
+        gtk_entry_set_text(GTK_ENTRY(stock), stxt);
+        gtk_entry_set_text(GTK_ENTRY(category), old_category ? old_category : "");
+        for (int i = 0; UNITS[i]; i++)
+            if (g_strcmp0(UNITS[i], old_unit) == 0)
+                gtk_combo_box_set_active(GTK_COMBO_BOX(unit), i);
+    }
+
     const char *labels[] = {"Název:", "Cena (Kč):", "Počet:", "Kategorie:", "Jednotka:"};
     GtkWidget *widgets[] = {name, price, stock, category, unit};
     for (int i = 0; i < 5; i++) {
@@ -353,13 +379,13 @@ static void add_item_clicked(GtkButton *button, gpointer data)
         const char *n = gtk_entry_get_text(GTK_ENTRY(name));
         const char *cat = gtk_entry_get_text(GTK_ENTRY(category));
         gchar *u = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(unit));
-        double p = 0.0, s = 0.0;
+        double p = 0.0, st = 0.0;
 
-        if (!n || !*g_strstrip((gchar *)n)) {
+        if (!n || !*n) {
             show_error(GTK_WINDOW(dialog), "Zadej název položky.");
             g_free(u); continue;
         }
-        if (name_exists(app, n)) {
+        if ((!editing || !names_equal(n, old_name)) && name_exists(app, n)) {
             show_error(GTK_WINDOW(dialog), "Položka s tímto názvem už existuje.");
             g_free(u); continue;
         }
@@ -367,30 +393,61 @@ static void add_item_clicked(GtkButton *button, gpointer data)
             show_error(GTK_WINDOW(dialog), "Cena není platná. Použij desetinnou čárku.");
             g_free(u); continue;
         }
-        if (!parse_cz_number(gtk_entry_get_text(GTK_ENTRY(stock)), &s)) {
+        if (!parse_cz_number(gtk_entry_get_text(GTK_ENTRY(stock)), &st)) {
             show_error(GTK_WINDOW(dialog), "Počet není platný.");
             g_free(u); continue;
         }
-        if (g_strcmp0(u, "ks") == 0 && fabs(s - floor(s)) > 0.000001) {
+        if (g_strcmp0(u, "ks") == 0 && fabs(st - floor(st)) > 0.000001) {
             show_error(GTK_WINDOW(dialog), "U jednotky ks musí být počet celé číslo.");
             g_free(u); continue;
         }
 
         const char *cat_final = (cat && *cat) ? cat : "Ostatní";
         GtkTreeIter iter;
-        gtk_list_store_append(app->store, &iter);
+        if (editing) {
+            iter = *edit_iter;
+        } else {
+            gtk_list_store_append(app->store, &iter);
+        }
+
         gtk_list_store_set(app->store, &iter,
-                           COL_NAME, n, COL_PRICE, p, COL_STOCK, s,
+                           COL_NAME, n, COL_PRICE, p, COL_STOCK, st,
                            COL_CATEGORY, cat_final, COL_UNIT, u, -1);
         app->dirty = TRUE;
-        scroll_to_last(app, &iter);
+
+        if (!editing)
+            scroll_to_last(app, &iter);
+
         gtk_label_set_text(GTK_LABEL(app->status_label),
-                           "Položka přidána. Nezapomeň uložit.");
+            editing ? "Položka upravena. Nezapomeň uložit."
+                    : "Položka přidána. Nezapomeň uložit.");
         g_free(u);
         break;
     }
 
+    g_free(old_name);
+    g_free(old_category);
+    g_free(old_unit);
     gtk_widget_destroy(dialog);
+}
+
+static void add_item_clicked(GtkButton *button, gpointer data)
+{
+    (void)button;
+    item_dialog((WarehouseApp *)data, NULL);
+}
+
+static void row_activated(GtkTreeView *view,
+                          GtkTreePath *path,
+                          GtkTreeViewColumn *column,
+                          gpointer data)
+{
+    (void)view;
+    (void)column;
+    WarehouseApp *app = data;
+    GtkTreeIter iter;
+    if (gtk_tree_model_get_iter(GTK_TREE_MODEL(app->store), &iter, path))
+        item_dialog(app, &iter);
 }
 
 static void save_clicked(GtkButton *button, gpointer data)
@@ -473,6 +530,8 @@ static void activate(GtkApplication *application, gpointer user_data)
         G_TYPE_STRING, G_TYPE_DOUBLE, G_TYPE_DOUBLE, G_TYPE_STRING, G_TYPE_STRING);
     app->treeview = gtk_tree_view_new_with_model(GTK_TREE_MODEL(app->store));
     add_columns(GTK_TREE_VIEW(app->treeview));
+    g_signal_connect(app->treeview, "row-activated",
+                     G_CALLBACK(row_activated), app);
 
     GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
