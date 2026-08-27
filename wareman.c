@@ -21,7 +21,7 @@ typedef struct {
     GtkWidget *status_label;
     char *items_path;
     gboolean dirty;
-} WarehouseApp;
+} WareManApp;
 
 static const char *UNITS[] = {"ks", "kg", "g", "l", "ml", "m", NULL};
 
@@ -92,7 +92,7 @@ static gboolean names_equal(const char *a, const char *b)
     return same;
 }
 
-static gboolean name_exists(WarehouseApp *app, const char *name)
+static gboolean name_exists(WareManApp *app, const char *name)
 {
     GtkTreeIter iter;
     gboolean valid = gtk_tree_model_get_iter_first(GTK_TREE_MODEL(app->store), &iter);
@@ -162,7 +162,7 @@ static void add_columns(GtkTreeView *view)
         gtk_tree_view_column_new_with_attributes("Jednotka", r, "text", COL_UNIT, NULL));
 }
 
-static gboolean load_items(WarehouseApp *app)
+static gboolean load_items(WareManApp *app)
 {
     gtk_list_store_clear(app->store);
 
@@ -232,7 +232,7 @@ static gboolean load_items(WarehouseApp *app)
     return TRUE;
 }
 
-static gboolean save_items(WarehouseApp *app)
+static gboolean save_items(WareManApp *app)
 {
     JsonBuilder *b = json_builder_new();
     json_builder_begin_object(b);
@@ -290,7 +290,7 @@ static gboolean save_items(WarehouseApp *app)
     return ok;
 }
 
-static void scroll_to_last(WarehouseApp *app, GtkTreeIter *iter)
+static void scroll_to_last(WareManApp *app, GtkTreeIter *iter)
 {
     GtkTreePath *path = gtk_tree_model_get_path(GTK_TREE_MODEL(app->store), iter);
     gtk_tree_view_scroll_to_cell(GTK_TREE_VIEW(app->treeview), path, NULL, TRUE, 1.0, 0.0);
@@ -305,7 +305,7 @@ static void show_error(GtkWindow *parent, const char *text)
     gtk_widget_destroy(d);
 }
 
-static void item_dialog(WarehouseApp *app, GtkTreeIter *edit_iter)
+static void item_dialog(WareManApp *app, GtkTreeIter *edit_iter)
 {
     gboolean editing = edit_iter != NULL;
     gchar *old_name = NULL, *old_category = NULL, *old_unit = NULL;
@@ -434,7 +434,7 @@ static void item_dialog(WarehouseApp *app, GtkTreeIter *edit_iter)
 static void add_item_clicked(GtkButton *button, gpointer data)
 {
     (void)button;
-    item_dialog((WarehouseApp *)data, NULL);
+    item_dialog((WareManApp *)data, NULL);
 }
 
 static void row_activated(GtkTreeView *view,
@@ -444,22 +444,71 @@ static void row_activated(GtkTreeView *view,
 {
     (void)view;
     (void)column;
-    WarehouseApp *app = data;
+    WareManApp *app = data;
     GtkTreeIter iter;
     if (gtk_tree_model_get_iter(GTK_TREE_MODEL(app->store), &iter, path))
         item_dialog(app, &iter);
 }
 
+static void delete_clicked(GtkButton *button, gpointer data)
+{
+    (void)button;
+    WareManApp *app = data;
+
+    GtkTreeSelection *selection =
+        gtk_tree_view_get_selection(GTK_TREE_VIEW(app->treeview));
+    GtkTreeIter iter;
+    if (!gtk_tree_selection_get_selected(selection, NULL, &iter)) {
+        gtk_label_set_text(GTK_LABEL(app->status_label),
+                           "Vyber položku, kterou chceš odstranit.");
+        return;
+    }
+
+    gchar *name = NULL;
+    gtk_tree_model_get(GTK_TREE_MODEL(app->store), &iter,
+                       COL_NAME, &name, -1);
+
+    GtkWidget *dialog = gtk_message_dialog_new(
+        GTK_WINDOW(app->window),
+        GTK_DIALOG_MODAL,
+        GTK_MESSAGE_WARNING,
+        GTK_BUTTONS_NONE,
+        "Opravdu odstranit položku?");
+
+    gtk_message_dialog_format_secondary_text(
+        GTK_MESSAGE_DIALOG(dialog),
+        "Položka „%s“ bude odstraněna ze skladu. Změnu je potom nutné uložit.",
+        name ? name : "");
+
+    gtk_dialog_add_buttons(GTK_DIALOG(dialog),
+                           "_Zrušit", GTK_RESPONSE_CANCEL,
+                           "_Odstranit", GTK_RESPONSE_ACCEPT,
+                           NULL);
+    gtk_dialog_set_default_response(GTK_DIALOG(dialog), GTK_RESPONSE_CANCEL);
+
+    gint response = gtk_dialog_run(GTK_DIALOG(dialog));
+    gtk_widget_destroy(dialog);
+
+    if (response == GTK_RESPONSE_ACCEPT) {
+        gtk_list_store_remove(app->store, &iter);
+        app->dirty = TRUE;
+        gtk_label_set_text(GTK_LABEL(app->status_label),
+                           "Položka odstraněna. Nezapomeň uložit.");
+    }
+
+    g_free(name);
+}
+
 static void save_clicked(GtkButton *button, gpointer data)
 {
     (void)button;
-    save_items((WarehouseApp *)data);
+    save_items((WareManApp *)data);
 }
 
 static void reload_clicked(GtkButton *button, gpointer data)
 {
     (void)button;
-    WarehouseApp *app = data;
+    WareManApp *app = data;
 
     if (!app->dirty) {
         load_items(app);
@@ -488,7 +537,7 @@ static void reload_clicked(GtkButton *button, gpointer data)
 static gboolean on_delete(GtkWidget *widget, GdkEvent *event, gpointer data)
 {
     (void)widget; (void)event;
-    WarehouseApp *app = data;
+    WareManApp *app = data;
     if (!app->dirty) return FALSE;
 
     GtkWidget *d = gtk_message_dialog_new(GTK_WINDOW(app->window), GTK_DIALOG_MODAL,
@@ -508,7 +557,7 @@ static gboolean on_delete(GtkWidget *widget, GdkEvent *event, gpointer data)
 static void activate(GtkApplication *application, gpointer user_data)
 {
     (void)user_data;
-    WarehouseApp *app = g_new0(WarehouseApp, 1);
+    WareManApp *app = g_new0(WareManApp, 1);
     app->items_path = find_items_file();
 
     app->window = gtk_application_window_new(application);
@@ -522,7 +571,7 @@ static void activate(GtkApplication *application, gpointer user_data)
     GtkWidget *title = gtk_label_new(NULL);
     gtk_label_set_markup(GTK_LABEL(title),
         "<span size=\"20000\" weight=\"bold\">Správa skladu systému AdavaCashReg</span>\n"
-        "<span size=\"11000\">ACRI v1 / JSON</span>");
+        "<span size=\"11000\">Editor souborů ARCI v1 / JSON</span>");
     gtk_widget_set_halign(title, GTK_ALIGN_START);
     gtk_box_pack_start(GTK_BOX(root), title, FALSE, FALSE, 0);
 
@@ -547,16 +596,19 @@ static void activate(GtkApplication *application, gpointer user_data)
     gtk_box_pack_start(GTK_BOX(root), bottom, FALSE, FALSE, 0);
 
     GtkWidget *add = gtk_button_new_with_label("Přidat novou");
-    GtkWidget *save = gtk_button_new_with_label("Uložit");
+    GtkWidget *remove = gtk_button_new_with_label("Odstranit");
     GtkWidget *reload = gtk_button_new_with_label("Znovu načíst");
+    GtkWidget *save = gtk_button_new_with_label("Uložit");
 
-    gtk_box_pack_start(GTK_BOX(bottom), add, TRUE, TRUE, 0);
-    gtk_box_pack_start(GTK_BOX(bottom), save, TRUE, TRUE, 0);
-    gtk_box_pack_start(GTK_BOX(bottom), reload, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(bottom), add, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(bottom), remove, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(bottom), reload, FALSE, FALSE, 0);
+    gtk_box_pack_end(GTK_BOX(bottom), save, FALSE, FALSE, 0);
 
     g_signal_connect(add, "clicked", G_CALLBACK(add_item_clicked), app);
-    g_signal_connect(save, "clicked", G_CALLBACK(save_clicked), app);
+    g_signal_connect(remove, "clicked", G_CALLBACK(delete_clicked), app);
     g_signal_connect(reload, "clicked", G_CALLBACK(reload_clicked), app);
+    g_signal_connect(save, "clicked", G_CALLBACK(save_clicked), app);
     g_signal_connect(app->window, "delete-event", G_CALLBACK(on_delete), app);
 
     load_items(app);
@@ -566,7 +618,7 @@ static void activate(GtkApplication *application, gpointer user_data)
 int main(int argc, char **argv)
 {
     GtkApplication *application =
-        gtk_application_new("cz.adava.warehousemanagment", G_APPLICATION_DEFAULT_FLAGS);
+        gtk_application_new("cz.adava.wareman", G_APPLICATION_DEFAULT_FLAGS);
     g_signal_connect(application, "activate", G_CALLBACK(activate), NULL);
     int status = g_application_run(G_APPLICATION(application), argc, argv);
     g_object_unref(application);

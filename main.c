@@ -546,6 +546,94 @@ static gboolean deduct_cart_from_stock(App *app)
     return FALSE;
 }
 
+static void payment_changed(GtkEditable *editable, gpointer data)
+{
+    (void)data;
+
+    g_print("payment_changed: %s\n",
+            gtk_entry_get_text(GTK_ENTRY(editable)));
+
+    GtkWidget *change_label =
+        g_object_get_data(
+            G_OBJECT(editable),
+            "change-label"
+        );
+
+    double *amount_due =
+        g_object_get_data(
+            G_OBJECT(editable),
+            "amount-due-pointer"
+        );
+
+    if (!change_label || !amount_due) {
+        g_print("CHYBA: change_label=%p amount_due=%p\n",
+                (void *)change_label,
+                (void *)amount_due);
+        return;
+    }
+
+    const char *text =
+        gtk_entry_get_text(GTK_ENTRY(editable));
+
+    double paid = 0.0;
+    char output[160];
+
+    if (!text || text[0] == '\0') {
+        snprintf(
+            output,
+            sizeof(output),
+            "<span size=\"18000\">Vrátit: --</span>"
+        );
+    } else if (!parse_cz_number(text, &paid)) {
+        snprintf(
+            output,
+            sizeof(output),
+            "<span size=\"18000\" foreground=\"red\">"
+            "Neplatná částka"
+            "</span>"
+        );
+    } else if (paid < *amount_due) {
+        char missing[64];
+
+        format_cz(
+            *amount_due - paid,
+            missing,
+            sizeof(missing)
+        );
+
+        snprintf(
+            output,
+            sizeof(output),
+            "<span size=\"18000\" foreground=\"red\" weight=\"bold\">"
+            "Chybí: %s Kč"
+            "</span>",
+            missing
+        );
+    } else {
+        char change[64];
+
+        format_cz(
+            paid - *amount_due,
+            change,
+            sizeof(change)
+        );
+
+        snprintf(
+            output,
+            sizeof(output),
+            "<span size=\"18000\" foreground=\"green\" weight=\"bold\">"
+            "Vrátit: %s Kč"
+            "</span>",
+            change
+        );
+    }
+
+    gtk_label_set_markup(
+        GTK_LABEL(change_label),
+        output
+    );
+}
+
 static void pay(GtkWidget *button, gpointer data)
 {
     (void)button;
@@ -568,13 +656,18 @@ static void pay(GtkWidget *button, gpointer data)
 
     GtkWidget *title = gtk_label_new(NULL);
     GtkWidget *entry = gtk_entry_new();
-    GtkWidget *change_label = gtk_label_new("Vrátit: --");
+    GtkWidget *change_label = gtk_label_new(NULL);
+    gtk_label_set_markup(GTK_LABEL(change_label),
+        "<span size=\"18000\">Vrátit: --</span>");
     gtk_entry_set_placeholder_text(GTK_ENTRY(entry), "např. 500,00");
     gtk_box_pack_start(GTK_BOX(box), title, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(box), entry, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(box), change_label, FALSE, FALSE, 0);
 
     double amount_due = app->total;
+    g_object_set_data(G_OBJECT(entry), "change-label", change_label);
+    g_object_set_data(G_OBJECT(entry), "amount-due-pointer", &amount_due);
+    g_signal_connect(entry, "changed", G_CALLBACK(payment_changed), NULL);
     char due[64], markup[160];
     format_cz(amount_due, due, sizeof(due));
     g_snprintf(markup, sizeof(markup),
@@ -591,6 +684,7 @@ static void pay(GtkWidget *button, gpointer data)
             g_snprintf(markup, sizeof(markup),
                 "<span size=\"24000\" weight=\"bold\">K zaplacení (zaokrouhleno): %s Kč</span>", due);
             gtk_label_set_markup(GTK_LABEL(title), markup);
+            payment_changed(GTK_EDITABLE(entry), NULL);
             continue;
         }
         if (r != GTK_RESPONSE_OK) break;
@@ -662,7 +756,7 @@ static void activate(GtkApplication *application, gpointer user_data)
     }
 
     app->window = gtk_application_window_new(application);
-    gtk_window_set_title(GTK_WINDOW(app->window), "AdavaCashReg");
+    gtk_window_set_title(GTK_WINDOW(app->window), "AdavaCashRegister");
     gtk_window_set_default_size(GTK_WINDOW(app->window), 1100, 700);
 
     GtkWidget *main_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
@@ -680,6 +774,7 @@ static void activate(GtkApplication *application, gpointer user_data)
     gtk_box_pack_start(GTK_BOX(left), heading, FALSE, FALSE, 0);
 
     GtkWidget *notebook = gtk_notebook_new();
+    gtk_notebook_set_scrollable(GTK_NOTEBOOK(notebook), TRUE);
     gtk_box_pack_start(GTK_BOX(left), notebook, TRUE, TRUE, 0);
 
     GHashTable *seen = g_hash_table_new(g_str_hash, g_str_equal);

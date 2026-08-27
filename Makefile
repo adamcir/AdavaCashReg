@@ -6,11 +6,11 @@ LDLIBS := $(shell pkg-config --libs $(PKGS))
 OUT_DIR := out
 
 CASHREG := $(OUT_DIR)/AdavaCashReg
-WAREHOUSE := $(OUT_DIR)/AdavaWarehouseManagment
+WAREMAN := $(OUT_DIR)/AdavaWareMan
 
-.PHONY: all clean cashreg warehouse
+.PHONY: all clean cashreg wareman
 
-all: cashreg warehouse
+all: cashreg wareman
 
 out:
 	mkdir -p $(OUT_DIR)
@@ -18,8 +18,8 @@ out:
 cashreg: main.c | $(OUT_DIR)
 	$(CC) $(CFLAGS) $< -o $(CASHREG) $(LDLIBS)
 
-warehouse: warehouse.c | $(OUT_DIR)
-	$(CC) $(CFLAGS) $< -o $(WAREHOUSE) $(LDLIBS)
+wareman: wareman.c | $(OUT_DIR)
+	$(CC) $(CFLAGS) $< -o $(WAREMAN) $(LDLIBS)
 
 run: all
 	cd $(OUT_DIR) && ./AdavaCashReg
