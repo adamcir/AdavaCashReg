@@ -443,7 +443,56 @@ static void save_clicked(GtkButton *button, gpointer data)
 static void reload_clicked(GtkButton *button, gpointer data)
 {
     (void)button;
-    load_items((WarehouseApp *)data);
+
+    WarehouseApp *app = data;
+
+    if (!app->dirty) {
+        load_items(app);
+        return;
+    }
+
+    GtkWidget *dialog =
+        gtk_message_dialog_new(
+            GTK_WINDOW(app->window),
+            GTK_DIALOG_MODAL,
+            GTK_MESSAGE_WARNING,
+            GTK_BUTTONS_NONE,
+            "Máš neuložené změny."
+        );
+
+    gtk_message_dialog_format_secondary_text(
+        GTK_MESSAGE_DIALOG(dialog),
+        "Pokud znovu načteš items.acri, neuložené změny se ztratí."
+    );
+
+    gtk_dialog_add_buttons(
+        GTK_DIALOG(dialog),
+        "_Zrušit", GTK_RESPONSE_CANCEL,
+        "_Zahodit změny a načíst", GTK_RESPONSE_REJECT,
+        "_Uložit a načíst", GTK_RESPONSE_ACCEPT,
+        NULL
+    );
+
+    gtk_dialog_set_default_response(
+        GTK_DIALOG(dialog),
+        GTK_RESPONSE_ACCEPT
+    );
+
+    gint response =
+        gtk_dialog_run(GTK_DIALOG(dialog));
+
+    gtk_widget_destroy(dialog);
+
+    if (response == GTK_RESPONSE_ACCEPT) {
+        if (save_items(app))
+            load_items(app);
+        return;
+    }
+
+    if (response == GTK_RESPONSE_REJECT) {
+        load_items(app);
+        return;
+    }
 }
 
 static gboolean on_window_delete(GtkWidget *widget,
@@ -557,7 +606,7 @@ static void activate(GtkApplication *application, gpointer user_data)
     gtk_box_pack_start(GTK_BOX(root), bottom, FALSE, FALSE, 0);
 
     GtkWidget *reload_btn = gtk_button_new_with_label("Znovu načíst");
-    GtkWidget *save_btn = gtk_button_new_with_label("ULOŽIT items.acri");
+    GtkWidget *save_btn = gtk_button_new_with_label("Uložit");
     gtk_widget_set_size_request(save_btn, 180, 44);
     gtk_box_pack_start(GTK_BOX(bottom), reload_btn, FALSE, FALSE, 0);
     gtk_box_pack_end(GTK_BOX(bottom), save_btn, FALSE, FALSE, 0);

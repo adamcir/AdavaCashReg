@@ -434,6 +434,7 @@ static void clear_cart(GtkWidget *button, gpointer data)
 }
 
 static void show_receipt(App *app,
+                         double charged_total,
                          double paid,
                          double change)
 {
@@ -451,7 +452,7 @@ static void show_receipt(App *app,
     char paid_text[64];
     char change_text[64];
 
-    format_price_cz(app->total, total_text, sizeof(total_text));
+    format_price_cz(charged_total, total_text, sizeof(total_text));
     format_price_cz(paid, paid_text, sizeof(paid_text));
     format_price_cz(change, change_text, sizeof(change_text));
 
@@ -491,7 +492,7 @@ static void payment_changed(GtkEditable *editable, gpointer data)
     double total =
         *(double *)g_object_get_data(
             G_OBJECT(editable),
-            "total-pointer"
+            "amount-due-pointer"
         );
 
     const char *text =
@@ -559,7 +560,7 @@ static void pay(GtkWidget *button, gpointer data)
 {
     App *app = data;
 
-    if (app->total <= 0.0) {
+    if (!cart_has_items(app)) {
 
         gtk_label_set_text(
             GTK_LABEL(app->status_label),
@@ -568,6 +569,8 @@ static void pay(GtkWidget *button, gpointer data)
 
         return;
     }
+
+    const gint RESPONSE_ROUND = 1001;
 
     GtkWidget *dialog =
         gtk_dialog_new_with_buttons(
@@ -584,6 +587,12 @@ static void pay(GtkWidget *button, gpointer data)
 
             NULL
         );
+
+    gtk_dialog_add_button(
+        GTK_DIALOG(dialog),
+        "_Zaokrouhlit",
+        RESPONSE_ROUND
+    );
 
     gtk_window_set_default_size(
         GTK_WINDOW(dialog),
@@ -610,12 +619,14 @@ static void pay(GtkWidget *button, gpointer data)
         0
     );
 
+    double amount_due = app->total;
+
     GtkWidget *title =
         gtk_label_new(NULL);
 
     char total_text[128];
     char total_price[64];
-    format_price_cz(app->total, total_price, sizeof(total_price));
+    format_price_cz(amount_due, total_price, sizeof(total_price));
 
     snprintf(
         total_text,
@@ -699,8 +710,8 @@ static void pay(GtkWidget *button, gpointer data)
 
     g_object_set_data(
         G_OBJECT(entry),
-        "total-pointer",
-        &app->total
+        "amount-due-pointer",
+        &amount_due
     );
 
     g_signal_connect(
@@ -716,6 +727,42 @@ static void pay(GtkWidget *button, gpointer data)
 
         int response =
             gtk_dialog_run(GTK_DIALOG(dialog));
+
+        if (response == RESPONSE_ROUND) {
+            gint64 cents =
+                (gint64)(app->total * 100.0 + 0.5);
+
+            gint64 rounded_crowns =
+                (cents + 50) / 100;
+
+            amount_due = (double)rounded_crowns;
+
+            format_price_cz(
+                amount_due,
+                total_price,
+                sizeof(total_price)
+            );
+
+            snprintf(
+                total_text,
+                sizeof(total_text),
+                "<span size=\"15000\">K zaplacení (zaokrouhleno)</span>\n"
+                "<span size=\"30000\" weight=\"bold\">%s Kč</span>",
+                total_price
+            );
+
+            gtk_label_set_markup(
+                GTK_LABEL(title),
+                total_text
+            );
+
+            payment_changed(
+                GTK_EDITABLE(entry),
+                NULL
+            );
+
+            continue;
+        }
 
         if (response != GTK_RESPONSE_OK)
             break;
@@ -745,7 +792,7 @@ static void pay(GtkWidget *button, gpointer data)
             continue;
         }
 
-        if (paid < app->total) {
+        if (paid < amount_due) {
 
             GtkWidget *error =
                 gtk_message_dialog_new(
@@ -757,7 +804,7 @@ static void pay(GtkWidget *button, gpointer data)
                 );
 
             char missing[64];
-            format_price_cz(app->total - paid, missing, sizeof(missing));
+            format_price_cz(amount_due - paid, missing, sizeof(missing));
 
             gtk_message_dialog_format_secondary_text(
                 GTK_MESSAGE_DIALOG(error),
@@ -772,12 +819,13 @@ static void pay(GtkWidget *button, gpointer data)
         }
 
         double change =
-            paid - app->total;
+            paid - amount_due;
 
         gtk_widget_hide(dialog);
 
         show_receipt(
             app,
+            amount_due,
             paid,
             change
         );
@@ -993,9 +1041,26 @@ static void activate(GtkApplication *application,
         10
     );
 
+    GtkWidget *products_scroll =
+        gtk_scrolled_window_new(NULL, NULL);
+
+    gtk_scrolled_window_set_policy(
+        GTK_SCROLLED_WINDOW(products_scroll),
+        GTK_POLICY_NEVER,
+        GTK_POLICY_AUTOMATIC
+    );
+
+    gtk_widget_set_hexpand(products_scroll, TRUE);
+    gtk_widget_set_vexpand(products_scroll, TRUE);
+
+    gtk_container_add(
+        GTK_CONTAINER(products_scroll),
+        grid
+    );
+
     gtk_box_pack_start(
         GTK_BOX(left),
-        grid,
+        products_scroll,
         TRUE,
         TRUE,
         0
