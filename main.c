@@ -288,6 +288,55 @@ static void remove_selected(GtkWidget *button, gpointer data)
     );
 }
 
+static gboolean cart_has_items(App *app)
+{
+    GtkTreeIter iter;
+    return gtk_tree_model_get_iter_first(
+        GTK_TREE_MODEL(app->store),
+        &iter
+    );
+}
+
+static gboolean on_window_delete(GtkWidget *widget,
+                                 GdkEvent *event,
+                                 gpointer data)
+{
+    (void)widget;
+    (void)event;
+
+    App *app = data;
+
+    if (!cart_has_items(app))
+        return FALSE;
+
+    GtkWidget *dialog = gtk_message_dialog_new(
+        GTK_WINDOW(app->window),
+        GTK_DIALOG_MODAL,
+        GTK_MESSAGE_WARNING,
+        GTK_BUTTONS_NONE,
+        "Je rozdělaný nákup."
+    );
+
+    gtk_message_dialog_format_secondary_text(
+        GTK_MESSAGE_DIALOG(dialog),
+        "V nákupním seznamu jsou stále položky. Opravdu chceš pokladnu ukončit a tento nákup zahodit?"
+    );
+
+    gtk_dialog_add_buttons(
+        GTK_DIALOG(dialog),
+        "_Pokračovat v nákupu", GTK_RESPONSE_CANCEL,
+        "_Ukončit bez dokončení", GTK_RESPONSE_ACCEPT,
+        NULL
+    );
+
+    gtk_dialog_set_default_response(GTK_DIALOG(dialog), GTK_RESPONSE_CANCEL);
+
+    gint response = gtk_dialog_run(GTK_DIALOG(dialog));
+    gtk_widget_destroy(dialog);
+
+    return response != GTK_RESPONSE_ACCEPT;
+}
+
 static void clear_cart(GtkWidget *button, gpointer data)
 {
     App *app = data;
@@ -1104,6 +1153,13 @@ static void activate(GtkApplication *application,
         pay_button,
         "clicked",
         G_CALLBACK(pay),
+        app
+    );
+
+    g_signal_connect(
+        app->window,
+        "delete-event",
+        G_CALLBACK(on_window_delete),
         app
     );
 

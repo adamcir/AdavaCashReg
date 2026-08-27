@@ -25,6 +25,7 @@ typedef struct {
     GtkWidget *price_entry;
     GtkWidget *status_label;
     char *items_path;
+    gboolean dirty;
 } WarehouseApp;
 
 static char *find_items_file(void)
@@ -91,6 +92,7 @@ static gboolean load_items(WarehouseApp *app)
         if (g_error_matches(error, G_FILE_ERROR, G_FILE_ERROR_NOENT)) {
             gtk_label_set_text(GTK_LABEL(app->status_label),
                                "items.acri zatím neexistuje. Ulož první položku.");
+            app->dirty = FALSE;
             g_clear_error(&error);
             return TRUE;
         }
@@ -141,6 +143,7 @@ static gboolean load_items(WarehouseApp *app)
     char status[256];
     g_snprintf(status, sizeof(status), "Načteno %d položek z %s", count, app->items_path);
     gtk_label_set_text(GTK_LABEL(app->status_label), status);
+    app->dirty = FALSE;
     return TRUE;
 }
 
@@ -183,6 +186,7 @@ static gboolean save_items(WarehouseApp *app)
     char msg[256];
     g_snprintf(msg, sizeof(msg), "Uloženo do %s", app->items_path);
     gtk_label_set_text(GTK_LABEL(app->status_label), msg);
+    app->dirty = FALSE;
     return TRUE;
 }
 
@@ -233,6 +237,7 @@ static void add_item(GtkButton *button, gpointer data)
                        COL_PRICE, price,
                        -1);
     clear_form(app);
+    app->dirty = TRUE;
     gtk_label_set_text(GTK_LABEL(app->status_label), "Položka přidána. Nezapomeň uložit.");
 }
 
@@ -255,6 +260,7 @@ static void update_item(GtkButton *button, gpointer data)
                        COL_NAME, name,
                        COL_PRICE, price,
                        -1);
+    app->dirty = TRUE;
     gtk_label_set_text(GTK_LABEL(app->status_label), "Položka upravena. Nezapomeň uložit.");
 }
 
@@ -270,6 +276,7 @@ static void delete_item(GtkButton *button, gpointer data)
     }
     gtk_list_store_remove(app->store, &iter);
     clear_form(app);
+    app->dirty = TRUE;
     gtk_label_set_text(GTK_LABEL(app->status_label), "Položka odstraněna. Nezapomeň uložit.");
 }
 
@@ -303,6 +310,56 @@ static void reload_clicked(GtkButton *button, gpointer data)
 {
     (void)button;
     load_items((WarehouseApp *)data);
+}
+
+static gboolean on_window_delete(GtkWidget *widget,
+                                 GdkEvent *event,
+                                 gpointer data)
+{
+    (void)widget;
+    (void)event;
+
+    WarehouseApp *app = data;
+
+    if (!app->dirty)
+        return FALSE;
+
+    GtkWidget *dialog = gtk_message_dialog_new(
+        GTK_WINDOW(app->window),
+        GTK_DIALOG_MODAL,
+        GTK_MESSAGE_WARNING,
+        GTK_BUTTONS_NONE,
+        "Máš neuložené změny."
+    );
+
+    gtk_message_dialog_format_secondary_text(
+        GTK_MESSAGE_DIALOG(dialog),
+        "Položky v items.acri byly změněny. Opravdu je nechceš před ukončením uložit?"
+    );
+
+    gtk_dialog_add_buttons(
+        GTK_DIALOG(dialog),
+        "_Zrušit", GTK_RESPONSE_CANCEL,
+        "_Neuložit", GTK_RESPONSE_REJECT,
+        "_Uložit", GTK_RESPONSE_ACCEPT,
+        NULL
+    );
+
+    gtk_dialog_set_default_response(GTK_DIALOG(dialog), GTK_RESPONSE_ACCEPT);
+
+    gint response = gtk_dialog_run(GTK_DIALOG(dialog));
+    gtk_widget_destroy(dialog);
+
+    if (response == GTK_RESPONSE_ACCEPT) {
+        if (save_items(app))
+            return FALSE;
+        return TRUE;
+    }
+
+    if (response == GTK_RESPONSE_REJECT)
+        return FALSE;
+
+    return TRUE;
 }
 
 static void activate(GtkApplication *application, gpointer user_data)
@@ -380,6 +437,7 @@ static void activate(GtkApplication *application, gpointer user_data)
     g_signal_connect(delete_btn, "clicked", G_CALLBACK(delete_item), app);
     g_signal_connect(save_btn, "clicked", G_CALLBACK(save_clicked), app);
     g_signal_connect(reload_btn, "clicked", G_CALLBACK(reload_clicked), app);
+    g_signal_connect(app->window, "delete-event", G_CALLBACK(on_window_delete), app);
 
     load_items(app);
     gtk_widget_show_all(app->window);
