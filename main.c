@@ -39,6 +39,79 @@ typedef struct {
 static Product *products = NULL;
 static int product_count = 0;
 
+static gboolean parse_price_cz(const char *text, double *value)
+{
+    if (!text || !value)
+        return FALSE;
+
+    gchar *copy = g_strdup(text);
+    gchar *trimmed = g_strstrip(copy);
+
+    if (*trimmed == '\0' || strchr(trimmed, '.') != NULL) {
+        g_free(copy);
+        return FALSE;
+    }
+
+    int commas = 0;
+    for (char *p = trimmed; *p; p++) {
+        if (*p == ',') {
+            commas++;
+            *p = '.';
+        }
+    }
+
+    if (commas > 1) {
+        g_free(copy);
+        return FALSE;
+    }
+
+    gchar *end = NULL;
+    double parsed = g_ascii_strtod(trimmed, &end);
+    gboolean ok = end != trimmed && *end == '\0' && parsed >= 0.0;
+
+    if (ok)
+        *value = parsed;
+
+    g_free(copy);
+    return ok;
+}
+
+static void format_price_cz(double value, char *buffer, gsize size)
+{
+    g_ascii_formatd(buffer, size, "%.2f", value);
+    for (char *p = buffer; *p; p++)
+        if (*p == '.')
+            *p = ',';
+}
+
+static gboolean product_name_exists_loaded(const char *name)
+{
+    gchar *needle_copy = g_strdup(name);
+    gchar *needle_trimmed = g_strstrip(needle_copy);
+    gchar *needle = g_utf8_casefold(needle_trimmed, -1);
+
+    for (int i = 0; i < product_count; i++) {
+        gchar *existing_copy = g_strdup(products[i].name);
+        gchar *existing_trimmed = g_strstrip(existing_copy);
+        gchar *existing = g_utf8_casefold(existing_trimmed, -1);
+
+        gboolean same = g_strcmp0(needle, existing) == 0;
+
+        g_free(existing);
+        g_free(existing_copy);
+
+        if (same) {
+            g_free(needle);
+            g_free(needle_copy);
+            return TRUE;
+        }
+    }
+
+    g_free(needle);
+    g_free(needle_copy);
+    return FALSE;
+}
+
 static char *find_items_file(void)
 {
     if (g_file_test("items.acri", G_FILE_TEST_IS_REGULAR))
@@ -84,10 +157,11 @@ static gboolean load_products(const char *path, GError **error)
 
         gchar *name = g_strstrip(parts[0]);
         gchar *price_text = g_strstrip(parts[1]);
-        gchar *end = NULL;
-        double price = g_ascii_strtod(price_text, &end);
+        double price = 0.0;
 
-        if (*name != '\0' && end != price_text && price >= 0.0) {
+        if (*name != '\0' &&
+            parse_price_cz(price_text, &price) &&
+            !product_name_exists_loaded(name)) {
             products = g_realloc(products, sizeof(Product) * (product_count + 1));
             products[product_count].name = g_strdup(name);
             products[product_count].price = price;
@@ -105,12 +179,15 @@ static gboolean load_products(const char *path, GError **error)
 static void update_total(App *app)
 {
     char text[128];
+    char price[64];
+
+    format_price_cz(app->total, price, sizeof(price));
 
     snprintf(
         text,
         sizeof(text),
-        "<span size=\"30000\" weight=\"bold\">%.2f Kč</span>",
-        app->total
+        "<span size=\"30000\" weight=\"bold\">%s Kč</span>",
+        price
     );
 
     gtk_label_set_markup(GTK_LABEL(app->total_label), text);
@@ -213,12 +290,15 @@ static void add_product(GtkWidget *button, gpointer data)
     update_total(app);
 
     char status[128];
+    char price_text[64];
+    format_price_cz(product->price, price_text, sizeof(price_text));
+
     snprintf(
         status,
         sizeof(status),
-        "Přidáno: %s — %.2f Kč",
+        "Přidáno: %s — %s Kč",
         product->name,
-        product->price
+        price_text
     );
 
     gtk_label_set_text(GTK_LABEL(app->status_label), status);
@@ -367,6 +447,13 @@ static void show_receipt(App *app,
         );
 
     char message[512];
+    char total_text[64];
+    char paid_text[64];
+    char change_text[64];
+
+    format_price_cz(app->total, total_text, sizeof(total_text));
+    format_price_cz(paid, paid_text, sizeof(paid_text));
+    format_price_cz(change, change_text, sizeof(change_text));
 
     snprintf(
         message,
@@ -375,15 +462,15 @@ static void show_receipt(App *app,
         "============================\n"
         "       Adava Store :)\n"
         "============================\n\n"
-        "Celkem:       %.2f Kč\n"
-        "Zaplaceno:    %.2f Kč\n"
-        "Vrátit:       %.2f Kč\n\n"
+        "Celkem:       %s Kč\n"
+        "Zaplaceno:    %s Kč\n"
+        "Vrátit:       %s Kč\n\n"
         "Děkujeme za nákup!\n"
         "============================",
 
-        app->total,
-        paid,
-        change
+        total_text,
+        paid_text,
+        change_text
     );
 
     gtk_message_dialog_format_secondary_text(
@@ -410,9 +497,8 @@ static void payment_changed(GtkEditable *editable, gpointer data)
     const char *text =
         gtk_entry_get_text(GTK_ENTRY(editable));
 
-    char *end;
-
-    double paid = g_ascii_strtod(text, &end);
+    double paid = 0.0;
+    gboolean valid_paid = parse_price_cz(text, &paid);
 
     char output[128];
 
@@ -424,26 +510,42 @@ static void payment_changed(GtkEditable *editable, gpointer data)
             "<span size=\"18000\">Vrátit: --</span>"
         );
 
-    } else if (paid < total) {
+    } else if (!valid_paid) {
 
         snprintf(
             output,
             sizeof(output),
             "<span size=\"18000\" foreground=\"red\">"
-            "Chybí: %.2f Kč"
+            "Neplatná částka — použij desetinnou čárku."
+            "</span>"
+        );
+
+    } else if (paid < total) {
+
+        char missing[64];
+        format_price_cz(total - paid, missing, sizeof(missing));
+
+        snprintf(
+            output,
+            sizeof(output),
+            "<span size=\"18000\" foreground=\"red\">"
+            "Chybí: %s Kč"
             "</span>",
-            total - paid
+            missing
         );
 
     } else {
+
+        char change[64];
+        format_price_cz(paid - total, change, sizeof(change));
 
         snprintf(
             output,
             sizeof(output),
             "<span size=\"18000\" foreground=\"green\" weight=\"bold\">"
-            "Vrátit: %.2f Kč"
+            "Vrátit: %s Kč"
             "</span>",
-            paid - total
+            change
         );
     }
 
@@ -512,13 +614,15 @@ static void pay(GtkWidget *button, gpointer data)
         gtk_label_new(NULL);
 
     char total_text[128];
+    char total_price[64];
+    format_price_cz(app->total, total_price, sizeof(total_price));
 
     snprintf(
         total_text,
         sizeof(total_text),
         "<span size=\"15000\">K zaplacení</span>\n"
-        "<span size=\"30000\" weight=\"bold\">%.2f Kč</span>",
-        app->total
+        "<span size=\"30000\" weight=\"bold\">%s Kč</span>",
+        total_price
     );
 
     gtk_label_set_markup(
@@ -555,7 +659,7 @@ static void pay(GtkWidget *button, gpointer data)
 
     gtk_entry_set_placeholder_text(
         GTK_ENTRY(entry),
-        "např. 500"
+        "např. 500,00"
     );
 
     gtk_entry_set_input_purpose(
@@ -619,8 +723,27 @@ static void pay(GtkWidget *button, gpointer data)
         const char *text =
             gtk_entry_get_text(GTK_ENTRY(entry));
 
-        double paid =
-            g_ascii_strtod(text, NULL);
+        double paid = 0.0;
+
+        if (!parse_price_cz(text, &paid)) {
+            GtkWidget *error =
+                gtk_message_dialog_new(
+                    GTK_WINDOW(dialog),
+                    GTK_DIALOG_MODAL,
+                    GTK_MESSAGE_ERROR,
+                    GTK_BUTTONS_OK,
+                    "Neplatná částka."
+                );
+
+            gtk_message_dialog_format_secondary_text(
+                GTK_MESSAGE_DIALOG(error),
+                "Použij český desetinný zápis, například 500,50."
+            );
+
+            gtk_dialog_run(GTK_DIALOG(error));
+            gtk_widget_destroy(error);
+            continue;
+        }
 
         if (paid < app->total) {
 
@@ -633,10 +756,13 @@ static void pay(GtkWidget *button, gpointer data)
                     "Zákazník zaplatil málo."
                 );
 
+            char missing[64];
+            format_price_cz(app->total - paid, missing, sizeof(missing));
+
             gtk_message_dialog_format_secondary_text(
                 GTK_MESSAGE_DIALOG(error),
-                "Chybí %.2f Kč.",
-                app->total - paid
+                "Chybí %s Kč.",
+                missing
             );
 
             gtk_dialog_run(GTK_DIALOG(error));
@@ -692,13 +818,16 @@ static void price_cell_func(GtkTreeViewColumn *column,
         -1
     );
 
-    char text[64];
+    char price[64];
+    char text[80];
+
+    format_price_cz(value, price, sizeof(price));
 
     snprintf(
         text,
         sizeof(text),
-        "%.2f Kč",
-        value
+        "%s Kč",
+        price
     );
 
     g_object_set(
@@ -875,13 +1004,16 @@ static void activate(GtkApplication *application,
     for (int i = 0; i < product_count; i++) {
 
         char text[128];
+        char price[64];
+
+        format_price_cz(products[i].price, price, sizeof(price));
 
         snprintf(
             text,
             sizeof(text),
-            "%s\n%.2f Kč",
+            "%s\n%s Kč",
             products[i].name,
-            products[i].price
+            price
         );
 
         GtkWidget *button =
@@ -1092,7 +1224,7 @@ static void activate(GtkApplication *application,
 
     GtkWidget *remove =
         gtk_button_new_with_label(
-            "− Odebrat"
+            "Odebrat"
         );
 
     GtkWidget *clear =
@@ -1102,7 +1234,7 @@ static void activate(GtkApplication *application,
 
     GtkWidget *pay_button =
         gtk_button_new_with_label(
-            "ZAPLATIT"
+            "Zaplatit"
         );
 
     gtk_widget_set_size_request(

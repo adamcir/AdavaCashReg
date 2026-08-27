@@ -28,6 +28,114 @@ typedef struct {
     gboolean dirty;
 } WarehouseApp;
 
+static gboolean parse_price_cz(const char *text, double *value)
+{
+    if (!text || !value)
+        return FALSE;
+
+    gchar *copy = g_strdup(text);
+    gchar *trimmed = g_strstrip(copy);
+
+    if (*trimmed == '\0' || strchr(trimmed, '.') != NULL) {
+        g_free(copy);
+        return FALSE;
+    }
+
+    int commas = 0;
+    for (char *p = trimmed; *p; p++) {
+        if (*p == ',') {
+            commas++;
+            *p = '.';
+        }
+    }
+
+    if (commas > 1) {
+        g_free(copy);
+        return FALSE;
+    }
+
+    gchar *end = NULL;
+    double parsed = g_ascii_strtod(trimmed, &end);
+    gboolean ok = end != trimmed && *end == '\0' && parsed >= 0.0;
+
+    if (ok)
+        *value = parsed;
+
+    g_free(copy);
+    return ok;
+}
+
+static void format_price_cz(double value, char *buffer, gsize size)
+{
+    g_ascii_formatd(buffer, size, "%.2f", value);
+    for (char *p = buffer; *p; p++)
+        if (*p == '.')
+            *p = ',';
+}
+
+static gboolean names_equal(const char *a, const char *b)
+{
+    gchar *a_copy = g_strdup(a ? a : "");
+    gchar *b_copy = g_strdup(b ? b : "");
+    gchar *a_fold = g_utf8_casefold(g_strstrip(a_copy), -1);
+    gchar *b_fold = g_utf8_casefold(g_strstrip(b_copy), -1);
+
+    gboolean same = g_strcmp0(a_fold, b_fold) == 0;
+
+    g_free(a_fold);
+    g_free(b_fold);
+    g_free(a_copy);
+    g_free(b_copy);
+    return same;
+}
+
+static gboolean name_exists_except(WarehouseApp *app,
+                                   const char *name,
+                                   GtkTreeIter *except_iter)
+{
+    GtkTreeIter iter;
+    gboolean valid = gtk_tree_model_get_iter_first(
+        GTK_TREE_MODEL(app->store), &iter);
+
+    GtkTreePath *except_path = except_iter
+        ? gtk_tree_model_get_path(GTK_TREE_MODEL(app->store), except_iter)
+        : NULL;
+
+    while (valid) {
+        gboolean is_except = FALSE;
+
+        if (except_path) {
+            GtkTreePath *path = gtk_tree_model_get_path(
+                GTK_TREE_MODEL(app->store), &iter);
+            is_except = gtk_tree_path_compare(path, except_path) == 0;
+            gtk_tree_path_free(path);
+        }
+
+        if (!is_except) {
+            gchar *existing = NULL;
+            gtk_tree_model_get(GTK_TREE_MODEL(app->store), &iter,
+                               COL_NAME, &existing, -1);
+
+            gboolean same = names_equal(existing, name);
+            g_free(existing);
+
+            if (same) {
+                if (except_path)
+                    gtk_tree_path_free(except_path);
+                return TRUE;
+            }
+        }
+
+        valid = gtk_tree_model_iter_next(
+            GTK_TREE_MODEL(app->store), &iter);
+    }
+
+    if (except_path)
+        gtk_tree_path_free(except_path);
+
+    return FALSE;
+}
+
 static char *find_items_file(void)
 {
     if (g_file_test("items.acri", G_FILE_TEST_IS_REGULAR))
@@ -58,8 +166,10 @@ static void price_cell_func(GtkTreeViewColumn *column,
     (void)data;
     double price = 0.0;
     gtk_tree_model_get(model, iter, COL_PRICE, &price, -1);
-    char text[64];
-    g_snprintf(text, sizeof(text), "%.2f Kč", price);
+    char price_text[64];
+    char text[80];
+    format_price_cz(price, price_text, sizeof(price_text));
+    g_snprintf(text, sizeof(text), "%s Kč", price_text);
     g_object_set(renderer, "text", text, NULL);
 }
 
@@ -107,6 +217,7 @@ static gboolean load_items(WarehouseApp *app)
 
     gchar **lines = g_strsplit(content, "\n", -1);
     int count = 0;
+    int duplicate_count = 0;
 
     for (int i = 0; lines[i] != NULL; i++) {
         gchar *line = g_strstrip(lines[i]);
@@ -121,17 +232,20 @@ static gboolean load_items(WarehouseApp *app)
 
         gchar *name = g_strstrip(parts[0]);
         gchar *price_text = g_strstrip(parts[1]);
-        gchar *end = NULL;
-        double price = g_ascii_strtod(price_text, &end);
+        double price = 0.0;
 
-        if (*name && end != price_text && price >= 0.0) {
-            GtkTreeIter iter;
-            gtk_list_store_append(app->store, &iter);
-            gtk_list_store_set(app->store, &iter,
-                               COL_NAME, name,
-                               COL_PRICE, price,
-                               -1);
-            count++;
+        if (*name && parse_price_cz(price_text, &price)) {
+            if (name_exists_except(app, name, NULL)) {
+                duplicate_count++;
+            } else {
+                GtkTreeIter iter;
+                gtk_list_store_append(app->store, &iter);
+                gtk_list_store_set(app->store, &iter,
+                                   COL_NAME, name,
+                                   COL_PRICE, price,
+                                   -1);
+                count++;
+            }
         }
 
         g_strfreev(parts);
@@ -140,8 +254,16 @@ static gboolean load_items(WarehouseApp *app)
     g_strfreev(lines);
     g_free(content);
 
-    char status[256];
-    g_snprintf(status, sizeof(status), "Načteno %d položek z %s", count, app->items_path);
+    char status[320];
+    if (duplicate_count > 0) {
+        g_snprintf(status, sizeof(status),
+                   "Načteno %d položek z %s. Přeskočeno %d duplicitních názvů.",
+                   count, app->items_path, duplicate_count);
+    } else {
+        g_snprintf(status, sizeof(status),
+                   "Načteno %d položek z %s",
+                   count, app->items_path);
+    }
     gtk_label_set_text(GTK_LABEL(app->status_label), status);
     app->dirty = FALSE;
     return TRUE;
@@ -165,7 +287,9 @@ static gboolean save_items(WarehouseApp *app)
         for (char *p = name; p && *p; p++)
             if (*p == '|') *p = '/';
 
-        g_string_append_printf(out, "%s|%.2f\n", name ? name : "", price);
+        char price_text[64];
+        format_price_cz(price, price_text, sizeof(price_text));
+        g_string_append_printf(out, "%s|%s\n", name ? name : "", price_text);
         g_free(name);
         valid = gtk_tree_model_iter_next(GTK_TREE_MODEL(app->store), &iter);
     }
@@ -200,17 +324,11 @@ static gboolean read_form(WarehouseApp *app, const char **name, double *price)
         return FALSE;
     }
 
-    gchar *normalized = g_strdup(price_text);
-    for (char *p = normalized; *p; p++)
-        if (*p == ',') *p = '.';
-
-    gchar *end = NULL;
-    *price = g_ascii_strtod(normalized, &end);
-    gboolean valid = end != normalized && *g_strstrip(end) == '\0' && *price >= 0.0;
-    g_free(normalized);
-
-    if (!valid) {
-        gtk_label_set_text(GTK_LABEL(app->status_label), "Cena není platné nezáporné číslo.");
+    if (!parse_price_cz(price_text, price)) {
+        gtk_label_set_text(
+            GTK_LABEL(app->status_label),
+            "Cena není platná. Použij českou desetinnou čárku, např. 19,90."
+        );
         return FALSE;
     }
     return TRUE;
@@ -229,6 +347,14 @@ static void add_item(GtkButton *button, gpointer data)
     const char *name;
     double price;
     if (!read_form(app, &name, &price)) return;
+
+    if (name_exists_except(app, name, NULL)) {
+        gtk_label_set_text(
+            GTK_LABEL(app->status_label),
+            "Položka s tímto názvem už existuje. Každá položka musí mít originální název."
+        );
+        return;
+    }
 
     GtkTreeIter iter;
     gtk_list_store_append(app->store, &iter);
@@ -255,6 +381,14 @@ static void update_item(GtkButton *button, gpointer data)
     const char *name;
     double price;
     if (!read_form(app, &name, &price)) return;
+
+    if (name_exists_except(app, name, &iter)) {
+        gtk_label_set_text(
+            GTK_LABEL(app->status_label),
+            "Položka s tímto názvem už existuje. Zvol jiné originální jméno."
+        );
+        return;
+    }
 
     gtk_list_store_set(app->store, &iter,
                        COL_NAME, name,
@@ -294,7 +428,7 @@ static void selection_changed(GtkTreeSelection *selection, gpointer data)
                        -1);
 
     char price_text[64];
-    g_snprintf(price_text, sizeof(price_text), "%.2f", price);
+    format_price_cz(price, price_text, sizeof(price_text));
     gtk_entry_set_text(GTK_ENTRY(app->name_entry), name ? name : "");
     gtk_entry_set_text(GTK_ENTRY(app->price_entry), price_text);
     g_free(name);
@@ -378,7 +512,7 @@ static void activate(GtkApplication *application, gpointer user_data)
 
     GtkWidget *title = gtk_label_new(NULL);
     gtk_label_set_markup(GTK_LABEL(title),
-                         "<span size=\"20000\" weight=\"bold\">AdavaWarehouseManagment</span>\n"
+                         "<span size=\"20000\" weight=\"bold\">Správa skladu systému AdavaCashReg</span>\n"
                          "<span size=\"11000\">Editor AdavaCashReg Items (.acri)</span>");
     gtk_widget_set_halign(title, GTK_ALIGN_START);
     gtk_box_pack_start(GTK_BOX(root), title, FALSE, FALSE, 0);
@@ -404,7 +538,7 @@ static void activate(GtkApplication *application, gpointer user_data)
     app->name_entry = gtk_entry_new();
     app->price_entry = gtk_entry_new();
     gtk_entry_set_placeholder_text(GTK_ENTRY(app->name_entry), "např. Rohlík");
-    gtk_entry_set_placeholder_text(GTK_ENTRY(app->price_entry), "např. 3.50");
+    gtk_entry_set_placeholder_text(GTK_ENTRY(app->price_entry), "např. 3,50");
     gtk_widget_set_hexpand(app->name_entry, TRUE);
 
     gtk_grid_attach(GTK_GRID(form), name_label, 0, 0, 1, 1);
