@@ -445,11 +445,20 @@ static void quantity_cell(GtkTreeViewColumn *column, GtkCellRenderer *renderer,
     g_free(unit);
 }
 
+static void configure_dynamic_column(GtkTreeViewColumn *column)
+{
+    gtk_tree_view_column_set_expand(column, TRUE);
+    gtk_tree_view_column_set_resizable(column, TRUE);
+    gtk_tree_view_column_set_sizing(column, GTK_TREE_VIEW_COLUMN_GROW_ONLY);
+}
+
 static void add_text_column(GtkTreeView *view, const char *title, int col)
 {
     GtkCellRenderer *r = gtk_cell_renderer_text_new();
-    gtk_tree_view_append_column(view,
-        gtk_tree_view_column_new_with_attributes(title, r, "text", col, NULL));
+    GtkTreeViewColumn *c =
+        gtk_tree_view_column_new_with_attributes(title, r, "text", col, NULL);
+    configure_dynamic_column(c);
+    gtk_tree_view_append_column(view, c);
 }
 
 static void add_price_column(GtkTreeView *view, const char *title, int col)
@@ -459,6 +468,7 @@ static void add_price_column(GtkTreeView *view, const char *title, int col)
     gtk_tree_view_column_set_title(c, title);
     gtk_tree_view_column_pack_start(c, r, TRUE);
     gtk_tree_view_column_set_cell_data_func(c, r, price_cell, GINT_TO_POINTER(col), NULL);
+    configure_dynamic_column(c);
     gtk_tree_view_append_column(view, c);
 }
 
@@ -469,6 +479,7 @@ static void add_quantity_column(GtkTreeView *view)
     gtk_tree_view_column_set_title(c, "Množství");
     gtk_tree_view_column_pack_start(c, r, TRUE);
     gtk_tree_view_column_set_cell_data_func(c, r, quantity_cell, NULL, NULL);
+    configure_dynamic_column(c);
     gtk_tree_view_append_column(view, c);
 }
 
@@ -719,12 +730,19 @@ static GtkWidget *build_category_page(App *app, const char *category)
     GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
                                    GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
-    GtkWidget *grid = gtk_grid_new();
-    gtk_grid_set_row_spacing(GTK_GRID(grid), 8);
-    gtk_grid_set_column_spacing(GTK_GRID(grid), 8);
-    gtk_container_add(GTK_CONTAINER(scroll), grid);
+    gtk_widget_set_hexpand(scroll, TRUE);
+    gtk_widget_set_vexpand(scroll, TRUE);
 
-    int pos = 0;
+    GtkWidget *flow = gtk_flow_box_new();
+    gtk_flow_box_set_selection_mode(GTK_FLOW_BOX(flow), GTK_SELECTION_NONE);
+    gtk_flow_box_set_row_spacing(GTK_FLOW_BOX(flow), 8);
+    gtk_flow_box_set_column_spacing(GTK_FLOW_BOX(flow), 8);
+    gtk_flow_box_set_min_children_per_line(GTK_FLOW_BOX(flow), 1);
+    gtk_flow_box_set_max_children_per_line(GTK_FLOW_BOX(flow), 20);
+    gtk_flow_box_set_homogeneous(GTK_FLOW_BOX(flow), TRUE);
+    gtk_widget_set_hexpand(flow, TRUE);
+    gtk_container_add(GTK_CONTAINER(scroll), flow);
+
     for (int i = 0; i < product_count; i++) {
         if (g_strcmp0(products[i].category, category) != 0) continue;
         char price[64], text[160];
@@ -734,10 +752,10 @@ static GtkWidget *build_category_page(App *app, const char *category)
 
         GtkWidget *b = gtk_button_new_with_label(text);
         gtk_widget_set_size_request(b, 135, 85);
+        gtk_widget_set_hexpand(b, TRUE);
         g_object_set_data(G_OBJECT(b), "product-index", GINT_TO_POINTER(i));
         g_signal_connect(b, "clicked", G_CALLBACK(add_product), app);
-        gtk_grid_attach(GTK_GRID(grid), b, pos % 3, pos / 3, 1, 1);
-        pos++;
+        gtk_container_add(GTK_CONTAINER(flow), b);
     }
     return scroll;
 }
@@ -761,11 +779,14 @@ static void activate(GtkApplication *application, gpointer user_data)
 
     GtkWidget *main_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
     gtk_container_set_border_width(GTK_CONTAINER(main_box), 12);
+    gtk_widget_set_hexpand(main_box, TRUE);
+    gtk_widget_set_vexpand(main_box, TRUE);
     gtk_container_add(GTK_CONTAINER(app->window), main_box);
 
     GtkWidget *left = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
-    gtk_widget_set_size_request(left, 470, -1);
-    gtk_box_pack_start(GTK_BOX(main_box), left, FALSE, FALSE, 0);
+    gtk_widget_set_hexpand(left, TRUE);
+    gtk_widget_set_vexpand(left, TRUE);
+    gtk_box_pack_start(GTK_BOX(main_box), left, TRUE, TRUE, 0);
 
     GtkWidget *heading = gtk_label_new(NULL);
     gtk_label_set_markup(GTK_LABEL(heading),
@@ -788,6 +809,8 @@ static void activate(GtkApplication *application, gpointer user_data)
     g_hash_table_destroy(seen);
 
     GtkWidget *right = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
+    gtk_widget_set_hexpand(right, TRUE);
+    gtk_widget_set_vexpand(right, TRUE);
     gtk_box_pack_start(GTK_BOX(main_box), right, TRUE, TRUE, 0);
 
     GtkWidget *total_title = gtk_label_new("CELKEM");
@@ -810,6 +833,12 @@ static void activate(GtkApplication *application, gpointer user_data)
     add_price_column(GTK_TREE_VIEW(app->treeview), "Celkem", COL_TOTAL);
 
     GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
+                                   GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+    gtk_widget_set_hexpand(scroll, TRUE);
+    gtk_widget_set_vexpand(scroll, TRUE);
+    gtk_widget_set_hexpand(app->treeview, TRUE);
+    gtk_widget_set_vexpand(app->treeview, TRUE);
     gtk_container_add(GTK_CONTAINER(scroll), app->treeview);
     gtk_box_pack_start(GTK_BOX(right), scroll, TRUE, TRUE, 0);
 

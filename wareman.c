@@ -107,6 +107,43 @@ static gboolean name_exists(WareManApp *app, const char *name)
     return FALSE;
 }
 
+static gboolean category_exists_in_combo(GtkComboBoxText *combo,
+                                         const char *category)
+{
+    GtkTreeModel *model = gtk_combo_box_get_model(GTK_COMBO_BOX(combo));
+    GtkTreeIter iter;
+    gboolean valid = gtk_tree_model_get_iter_first(model, &iter);
+
+    while (valid) {
+        gchar *existing = NULL;
+        gtk_tree_model_get(model, &iter, 0, &existing, -1);
+        gboolean same = g_strcmp0(existing, category) == 0;
+        g_free(existing);
+        if (same)
+            return TRUE;
+        valid = gtk_tree_model_iter_next(model, &iter);
+    }
+    return FALSE;
+}
+
+static void fill_category_combo(WareManApp *app, GtkComboBoxText *combo)
+{
+    GtkTreeIter iter;
+    gboolean valid =
+        gtk_tree_model_get_iter_first(GTK_TREE_MODEL(app->store), &iter);
+
+    while (valid) {
+        gchar *category = NULL;
+        gtk_tree_model_get(GTK_TREE_MODEL(app->store), &iter,
+                           COL_CATEGORY, &category, -1);
+        if (category && *category &&
+            !category_exists_in_combo(combo, category))
+            gtk_combo_box_text_append_text(combo, category);
+        g_free(category);
+        valid = gtk_tree_model_iter_next(GTK_TREE_MODEL(app->store), &iter);
+    }
+}
+
 static void price_cell(GtkTreeViewColumn *column, GtkCellRenderer *renderer,
                        GtkTreeModel *model, GtkTreeIter *iter, gpointer data)
 {
@@ -133,17 +170,27 @@ static void stock_cell(GtkTreeViewColumn *column, GtkCellRenderer *renderer,
     g_free(unit);
 }
 
+static void configure_dynamic_column(GtkTreeViewColumn *column)
+{
+    gtk_tree_view_column_set_expand(column, TRUE);
+    gtk_tree_view_column_set_resizable(column, TRUE);
+    gtk_tree_view_column_set_sizing(column, GTK_TREE_VIEW_COLUMN_GROW_ONLY);
+}
+
 static void add_columns(GtkTreeView *view)
 {
     GtkCellRenderer *r = gtk_cell_renderer_text_new();
-    gtk_tree_view_append_column(view,
-        gtk_tree_view_column_new_with_attributes("Položka", r, "text", COL_NAME, NULL));
+    GtkTreeViewColumn *name =
+        gtk_tree_view_column_new_with_attributes("Položka", r, "text", COL_NAME, NULL);
+    configure_dynamic_column(name);
+    gtk_tree_view_append_column(view, name);
 
     r = gtk_cell_renderer_text_new();
     GtkTreeViewColumn *price = gtk_tree_view_column_new();
     gtk_tree_view_column_set_title(price, "Cena");
     gtk_tree_view_column_pack_start(price, r, TRUE);
     gtk_tree_view_column_set_cell_data_func(price, r, price_cell, NULL, NULL);
+    configure_dynamic_column(price);
     gtk_tree_view_append_column(view, price);
 
     r = gtk_cell_renderer_text_new();
@@ -151,15 +198,20 @@ static void add_columns(GtkTreeView *view)
     gtk_tree_view_column_set_title(stock, "Skladem");
     gtk_tree_view_column_pack_start(stock, r, TRUE);
     gtk_tree_view_column_set_cell_data_func(stock, r, stock_cell, NULL, NULL);
+    configure_dynamic_column(stock);
     gtk_tree_view_append_column(view, stock);
 
     r = gtk_cell_renderer_text_new();
-    gtk_tree_view_append_column(view,
-        gtk_tree_view_column_new_with_attributes("Kategorie", r, "text", COL_CATEGORY, NULL));
+    GtkTreeViewColumn *category =
+        gtk_tree_view_column_new_with_attributes("Kategorie", r, "text", COL_CATEGORY, NULL);
+    configure_dynamic_column(category);
+    gtk_tree_view_append_column(view, category);
 
     r = gtk_cell_renderer_text_new();
-    gtk_tree_view_append_column(view,
-        gtk_tree_view_column_new_with_attributes("Jednotka", r, "text", COL_UNIT, NULL));
+    GtkTreeViewColumn *unit =
+        gtk_tree_view_column_new_with_attributes("Jednotka", r, "text", COL_UNIT, NULL);
+    configure_dynamic_column(unit);
+    gtk_tree_view_append_column(view, unit);
 }
 
 static gboolean load_items(WareManApp *app)
@@ -339,13 +391,15 @@ static void item_dialog(WareManApp *app, GtkTreeIter *edit_iter)
     GtkWidget *name = gtk_entry_new();
     GtkWidget *price = gtk_entry_new();
     GtkWidget *stock = gtk_entry_new();
-    GtkWidget *category = gtk_entry_new();
+    GtkWidget *category = gtk_combo_box_text_new_with_entry();
+    GtkWidget *category_entry = gtk_bin_get_child(GTK_BIN(category));
+    fill_category_combo(app, GTK_COMBO_BOX_TEXT(category));
     GtkWidget *unit = gtk_combo_box_text_new();
 
     gtk_entry_set_placeholder_text(GTK_ENTRY(name), "např. Rohlík");
     gtk_entry_set_placeholder_text(GTK_ENTRY(price), "např. 3,90");
     gtk_entry_set_placeholder_text(GTK_ENTRY(stock), "např. 120 nebo 12,5");
-    gtk_entry_set_placeholder_text(GTK_ENTRY(category), "např. Pečivo");
+    gtk_entry_set_placeholder_text(GTK_ENTRY(category_entry), "např. Pečivo");
 
     for (int i = 0; UNITS[i]; i++)
         gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(unit), UNITS[i]);
@@ -358,7 +412,7 @@ static void item_dialog(WareManApp *app, GtkTreeIter *edit_iter)
         gtk_entry_set_text(GTK_ENTRY(name), old_name ? old_name : "");
         gtk_entry_set_text(GTK_ENTRY(price), ptxt);
         gtk_entry_set_text(GTK_ENTRY(stock), stxt);
-        gtk_entry_set_text(GTK_ENTRY(category), old_category ? old_category : "");
+        gtk_entry_set_text(GTK_ENTRY(category_entry), old_category ? old_category : "");
         for (int i = 0; UNITS[i]; i++)
             if (g_strcmp0(UNITS[i], old_unit) == 0)
                 gtk_combo_box_set_active(GTK_COMBO_BOX(unit), i);
@@ -377,7 +431,7 @@ static void item_dialog(WareManApp *app, GtkTreeIter *edit_iter)
 
     while (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_OK) {
         const char *n = gtk_entry_get_text(GTK_ENTRY(name));
-        const char *cat = gtk_entry_get_text(GTK_ENTRY(category));
+        const char *cat = gtk_entry_get_text(GTK_ENTRY(category_entry));
         gchar *u = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(unit));
         double p = 0.0, st = 0.0;
 
@@ -585,6 +639,10 @@ static void activate(GtkApplication *application, gpointer user_data)
     GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
                                    GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+    gtk_widget_set_hexpand(scroll, TRUE);
+    gtk_widget_set_vexpand(scroll, TRUE);
+    gtk_widget_set_hexpand(app->treeview, TRUE);
+    gtk_widget_set_vexpand(app->treeview, TRUE);
     gtk_container_add(GTK_CONTAINER(scroll), app->treeview);
     gtk_box_pack_start(GTK_BOX(root), scroll, TRUE, TRUE, 0);
 
