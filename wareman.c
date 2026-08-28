@@ -205,6 +205,36 @@ static void fill_category_combo(WareManApp *app, GtkComboBoxText *combo)
     }
 }
 
+static void apply_stock_warning(GtkCellRenderer *renderer,
+                                GtkTreeModel *model,
+                                GtkTreeIter *iter)
+{
+    double stock = 0.0;
+    gtk_tree_model_get(model, iter, COL_STOCK, &stock, -1);
+
+    if (stock <= 0.000001) {
+        g_object_set(renderer,
+                     "cell-background", "#ffb3b3",
+                     "cell-background-set", TRUE,
+                     NULL);
+    } else {
+        g_object_set(renderer,
+                     "cell-background-set", FALSE,
+                     NULL);
+    }
+}
+
+static void stock_warning_cell(GtkTreeViewColumn *column,
+                               GtkCellRenderer *renderer,
+                               GtkTreeModel *model,
+                               GtkTreeIter *iter,
+                               gpointer data)
+{
+    (void)column;
+    (void)data;
+    apply_stock_warning(renderer, model, iter);
+}
+
 static void price_cell(GtkTreeViewColumn *column, GtkCellRenderer *renderer,
                        GtkTreeModel *model, GtkTreeIter *iter, gpointer data)
 {
@@ -215,6 +245,7 @@ static void price_cell(GtkTreeViewColumn *column, GtkCellRenderer *renderer,
     format_cz(price, n, sizeof(n));
     g_snprintf(text, sizeof(text), "%s Kč", n);
     g_object_set(renderer, "text", text, NULL);
+    apply_stock_warning(renderer, model, iter);
 }
 
 static void stock_cell(GtkTreeViewColumn *column, GtkCellRenderer *renderer,
@@ -228,6 +259,7 @@ static void stock_cell(GtkTreeViewColumn *column, GtkCellRenderer *renderer,
     format_cz(stock, n, sizeof(n));
     g_snprintf(text, sizeof(text), "%s %s", n, unit ? unit : "");
     g_object_set(renderer, "text", text, NULL);
+    apply_stock_warning(renderer, model, iter);
     g_free(unit);
 }
 
@@ -243,6 +275,7 @@ static void add_columns(GtkTreeView *view)
     GtkCellRenderer *r = gtk_cell_renderer_text_new();
     GtkTreeViewColumn *name =
         gtk_tree_view_column_new_with_attributes("Položka", r, "text", COL_NAME, NULL);
+    gtk_tree_view_column_set_cell_data_func(name, r, stock_warning_cell, NULL, NULL);
     configure_dynamic_column(name);
     gtk_tree_view_append_column(view, name);
 
@@ -265,12 +298,14 @@ static void add_columns(GtkTreeView *view)
     r = gtk_cell_renderer_text_new();
     GtkTreeViewColumn *category =
         gtk_tree_view_column_new_with_attributes("Kategorie", r, "text", COL_CATEGORY, NULL);
+    gtk_tree_view_column_set_cell_data_func(category, r, stock_warning_cell, NULL, NULL);
     configure_dynamic_column(category);
     gtk_tree_view_append_column(view, category);
 
     r = gtk_cell_renderer_text_new();
     GtkTreeViewColumn *unit =
         gtk_tree_view_column_new_with_attributes("Jednotka", r, "text", COL_UNIT, NULL);
+    gtk_tree_view_column_set_cell_data_func(unit, r, stock_warning_cell, NULL, NULL);
     configure_dynamic_column(unit);
     gtk_tree_view_append_column(view, unit);
 }

@@ -813,6 +813,7 @@ static GtkWidget *build_category_page(App *app, const char *category)
 
     for (int i = 0; i < product_count; i++) {
         if (g_strcmp0(products[i].category, category) != 0) continue;
+        if (products[i].stock <= 0.000001) continue;
         char price[64], text[160];
         format_cz(products[i].price, price, sizeof(price));
         g_snprintf(text, sizeof(text), "%s\n%s Kč / %s",
@@ -869,6 +870,7 @@ static void activate(GtkApplication *application, gpointer user_data)
 
     GHashTable *seen = g_hash_table_new(g_str_hash, g_str_equal);
     for (int i = 0; i < product_count; i++) {
+        if (products[i].stock <= 0.000001) continue;
         if (g_hash_table_contains(seen, products[i].category)) continue;
         g_hash_table_add(seen, products[i].category);
         GtkWidget *page = build_category_page(app, products[i].category);
