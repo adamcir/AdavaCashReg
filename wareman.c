@@ -82,6 +82,67 @@ static void format_cz(double value, char *buf, gsize size)
         if (*p == '.') *p = ',';
 }
 
+static void format_json_price(double value, char *buf, gsize size)
+{
+    g_ascii_formatd(buf, size, "%.2f", value);
+}
+
+static void format_json_quantity(double value, char *buf, gsize size)
+{
+    g_ascii_formatd(buf, size, "%.6f", value);
+
+    char *end = buf + strlen(buf) - 1;
+    while (end > buf && *end == '0') {
+        *end = '\0';
+        end--;
+    }
+
+    if (end > buf && *end == '.')
+        g_strlcat(buf, "0", size);
+}
+
+static void append_json_string(GString *out, const char *text)
+{
+    const unsigned char *p = (const unsigned char *)(text ? text : "");
+
+    g_string_append_c(out, '"');
+
+    while (*p) {
+        switch (*p) {
+        case '"':
+            g_string_append(out, "\\\"");
+            break;
+        case '\\':
+            g_string_append(out, "\\\\");
+            break;
+        case '\b':
+            g_string_append(out, "\\b");
+            break;
+        case '\f':
+            g_string_append(out, "\\f");
+            break;
+        case '\n':
+            g_string_append(out, "\\n");
+            break;
+        case '\r':
+            g_string_append(out, "\\r");
+            break;
+        case '\t':
+            g_string_append(out, "\\t");
+            break;
+        default:
+            if (*p < 0x20)
+                g_string_append_printf(out, "\\u%04x", (unsigned int)*p);
+            else
+                g_string_append_c(out, (char)*p);
+            break;
+        }
+        p++;
+    }
+
+    g_string_append_c(out, '"');
+}
+
 static gboolean names_equal(const char *a, const char *b)
 {
     gchar *aa = g_utf8_casefold(a ? a : "", -1);
@@ -286,49 +347,74 @@ static gboolean load_items(WareManApp *app)
 
 static gboolean save_items(WareManApp *app)
 {
-    JsonBuilder *b = json_builder_new();
-    json_builder_begin_object(b);
-    json_builder_set_member_name(b, "format");
-    json_builder_add_string_value(b, "ACRI");
-    json_builder_set_member_name(b, "version");
-    json_builder_add_int_value(b, 1);
-    json_builder_set_member_name(b, "items");
-    json_builder_begin_array(b);
+    GString *out = g_string_new(
+        "{\n"
+        "  \"format\" : \"ACRI\",\n"
+        "  \"version\" : 1,\n"
+        "  \"items\" : [\n"
+    );
 
     GtkTreeIter iter;
-    gboolean valid = gtk_tree_model_get_iter_first(GTK_TREE_MODEL(app->store), &iter);
+    gboolean valid =
+        gtk_tree_model_get_iter_first(GTK_TREE_MODEL(app->store), &iter);
+    gboolean first = TRUE;
+
     while (valid) {
         gchar *name = NULL, *category = NULL, *unit = NULL;
         double price = 0.0, stock = 0.0;
+        char price_text[64];
+        char stock_text[64];
+
         gtk_tree_model_get(GTK_TREE_MODEL(app->store), &iter,
-                           COL_NAME, &name, COL_PRICE, &price, COL_STOCK, &stock,
-                           COL_CATEGORY, &category, COL_UNIT, &unit, -1);
+                           COL_NAME, &name,
+                           COL_PRICE, &price,
+                           COL_STOCK, &stock,
+                           COL_CATEGORY, &category,
+                           COL_UNIT, &unit,
+                           -1);
 
-        json_builder_begin_object(b);
-        json_builder_set_member_name(b, "name"); json_builder_add_string_value(b, name);
-        json_builder_set_member_name(b, "price"); json_builder_add_double_value(b, price);
-        json_builder_set_member_name(b, "stock"); json_builder_add_double_value(b, stock);
-        json_builder_set_member_name(b, "category"); json_builder_add_string_value(b, category);
-        json_builder_set_member_name(b, "unit"); json_builder_add_string_value(b, unit);
-        json_builder_end_object(b);
+        format_json_price(price, price_text, sizeof(price_text));
+        format_json_quantity(stock, stock_text, sizeof(stock_text));
 
-        g_free(name); g_free(category); g_free(unit);
+        if (!first)
+            g_string_append(out, ",\n");
+        first = FALSE;
+
+        g_string_append(out, "    {\n      \"name\" : ");
+        append_json_string(out, name);
+        g_string_append_printf(out,
+            ",\n"
+            "      \"price\" : %s,\n"
+            "      \"stock\" : %s,\n"
+            "      \"category\" : ",
+            price_text, stock_text);
+        append_json_string(out, category);
+        g_string_append(out, ",\n      \"unit\" : ");
+        append_json_string(out, unit);
+        g_string_append(out, "\n    }");
+
+        g_free(name);
+        g_free(category);
+        g_free(unit);
         valid = gtk_tree_model_iter_next(GTK_TREE_MODEL(app->store), &iter);
     }
 
-    json_builder_end_array(b);
-    json_builder_end_object(b);
-
-    JsonGenerator *g = json_generator_new();
-    JsonNode *root = json_builder_get_root(b);
-    json_generator_set_root(g, root);
-    json_generator_set_pretty(g, TRUE);
+    g_string_append(out, "\n  ]\n}\n");
 
     GError *error = NULL;
-    gboolean ok = json_generator_to_file(g, app->items_path, &error);
+    gboolean ok = g_file_set_contents(
+        app->items_path,
+        out->str,
+        (gssize)out->len,
+        &error
+    );
+
+    g_string_free(out, TRUE);
+
     if (!ok) {
         char msg[512];
-        g_snprintf(msg, sizeof(msg), "Nelze uložit: %s", error->message);
+        g_snprintf(msg, sizeof(msg), "Nelze uložit: %s",
+                   error ? error->message : "neznámá chyba");
         gtk_label_set_text(GTK_LABEL(app->status_label), msg);
         g_clear_error(&error);
     } else {
@@ -336,9 +422,6 @@ static gboolean save_items(WareManApp *app)
         app->dirty = FALSE;
     }
 
-    json_node_free(root);
-    g_object_unref(g);
-    g_object_unref(b);
     return ok;
 }
 

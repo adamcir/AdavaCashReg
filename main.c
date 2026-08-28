@@ -89,6 +89,67 @@ static void format_cz(double value, char *buf, gsize size)
         if (*p == '.') *p = ',';
 }
 
+static void format_json_price(double value, char *buf, gsize size)
+{
+    g_ascii_formatd(buf, size, "%.2f", value);
+}
+
+static void format_json_quantity(double value, char *buf, gsize size)
+{
+    g_ascii_formatd(buf, size, "%.6f", value);
+
+    char *end = buf + strlen(buf) - 1;
+    while (end > buf && *end == '0') {
+        *end = '\0';
+        end--;
+    }
+
+    if (end > buf && *end == '.')
+        g_strlcat(buf, "0", size);
+}
+
+static void append_json_string(GString *out, const char *text)
+{
+    const unsigned char *p = (const unsigned char *)(text ? text : "");
+
+    g_string_append_c(out, '"');
+
+    while (*p) {
+        switch (*p) {
+        case '"':
+            g_string_append(out, "\\\"");
+            break;
+        case '\\':
+            g_string_append(out, "\\\\");
+            break;
+        case '\b':
+            g_string_append(out, "\\b");
+            break;
+        case '\f':
+            g_string_append(out, "\\f");
+            break;
+        case '\n':
+            g_string_append(out, "\\n");
+            break;
+        case '\r':
+            g_string_append(out, "\\r");
+            break;
+        case '\t':
+            g_string_append(out, "\\t");
+            break;
+        default:
+            if (*p < 0x20)
+                g_string_append_printf(out, "\\u%04x", (unsigned int)*p);
+            else
+                g_string_append_c(out, (char)*p);
+            break;
+        }
+        p++;
+    }
+
+    g_string_append_c(out, '"');
+}
+
 static gboolean load_products(const char *path, GError **error)
 {
     JsonParser *parser = json_parser_new();
@@ -146,44 +207,50 @@ static Product *find_product(const char *name)
 
 static gboolean save_products(App *app, GError **error)
 {
-    JsonBuilder *b = json_builder_new();
-    json_builder_begin_object(b);
-    json_builder_set_member_name(b, "format");
-    json_builder_add_string_value(b, "ACRI");
-    json_builder_set_member_name(b, "version");
-    json_builder_add_int_value(b, 1);
-    json_builder_set_member_name(b, "items");
-    json_builder_begin_array(b);
+    GString *out = g_string_new(
+        "{\n"
+        "  \"format\" : \"ACRI\",\n"
+        "  \"version\" : 1,\n"
+        "  \"items\" : [\n"
+    );
 
     for (int i = 0; i < product_count; i++) {
         Product *p = &products[i];
-        json_builder_begin_object(b);
-        json_builder_set_member_name(b, "name");
-        json_builder_add_string_value(b, p->name);
-        json_builder_set_member_name(b, "price");
-        json_builder_add_double_value(b, p->price);
-        json_builder_set_member_name(b, "stock");
-        json_builder_add_double_value(b, p->stock);
-        json_builder_set_member_name(b, "category");
-        json_builder_add_string_value(b, p->category);
-        json_builder_set_member_name(b, "unit");
-        json_builder_add_string_value(b, p->unit);
-        json_builder_end_object(b);
+        char price[64];
+        char stock[64];
+
+        format_json_price(p->price, price, sizeof(price));
+        format_json_quantity(p->stock, stock, sizeof(stock));
+
+        g_string_append(out, "    {\n      \"name\" : ");
+        append_json_string(out, p->name);
+        g_string_append_printf(out,
+            ",\n"
+            "      \"price\" : %s,\n"
+            "      \"stock\" : %s,\n"
+            "      \"category\" : ",
+            price, stock);
+        append_json_string(out, p->category);
+        g_string_append(out, ",\n      \"unit\" : ");
+        append_json_string(out, p->unit);
+        g_string_append(out, "\n    }");
+
+        if (i + 1 < product_count)
+            g_string_append_c(out, ',');
+
+        g_string_append_c(out, '\n');
     }
 
-    json_builder_end_array(b);
-    json_builder_end_object(b);
+    g_string_append(out, "  ]\n}\n");
 
-    JsonGenerator *g = json_generator_new();
-    JsonNode *root = json_builder_get_root(b);
-    json_generator_set_root(g, root);
-    json_generator_set_pretty(g, TRUE);
+    gboolean ok = g_file_set_contents(
+        app->items_path,
+        out->str,
+        (gssize)out->len,
+        error
+    );
 
-    gboolean ok = json_generator_to_file(g, app->items_path, error);
-
-    json_node_free(root);
-    g_object_unref(g);
-    g_object_unref(b);
+    g_string_free(out, TRUE);
     return ok;
 }
 
@@ -739,8 +806,9 @@ static GtkWidget *build_category_page(App *app, const char *category)
     gtk_flow_box_set_column_spacing(GTK_FLOW_BOX(flow), 8);
     gtk_flow_box_set_min_children_per_line(GTK_FLOW_BOX(flow), 1);
     gtk_flow_box_set_max_children_per_line(GTK_FLOW_BOX(flow), 20);
-    gtk_flow_box_set_homogeneous(GTK_FLOW_BOX(flow), TRUE);
+    gtk_flow_box_set_homogeneous(GTK_FLOW_BOX(flow), FALSE);
     gtk_widget_set_hexpand(flow, TRUE);
+    gtk_widget_set_valign(flow, GTK_ALIGN_START);
     gtk_container_add(GTK_CONTAINER(scroll), flow);
 
     for (int i = 0; i < product_count; i++) {
@@ -752,7 +820,8 @@ static GtkWidget *build_category_page(App *app, const char *category)
 
         GtkWidget *b = gtk_button_new_with_label(text);
         gtk_widget_set_size_request(b, 135, 85);
-        gtk_widget_set_hexpand(b, TRUE);
+        gtk_widget_set_hexpand(b, FALSE);
+        gtk_widget_set_vexpand(b, FALSE);
         g_object_set_data(G_OBJECT(b), "product-index", GINT_TO_POINTER(i));
         g_signal_connect(b, "clicked", G_CALLBACK(add_product), app);
         gtk_container_add(GTK_CONTAINER(flow), b);
