@@ -1,7 +1,7 @@
 CC := gcc
 PKGS := gtk+-3.0 json-glib-1.0
 CFLAGS := -Wall -Wextra -O2 $(shell pkg-config --cflags $(PKGS))
-LDLIBS := $(shell pkg-config --libs $(PKGS))
+LDLIBS := $(shell pkg-config --libs $(PKGS)) -lm
 
 OUT_DIR := out
 
